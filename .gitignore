@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Model weights and HF cache
+models/
+*.bin
+.cache/
+
+# Audio inputs (we don't track binary audio in git)
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.opus
+
+# Transcript outputs
+*.txt
+*.srt
+*.vtt
+!README.md
+!LICENSE
+!requirements.txt
+
+# Run logs and IDE
+*.log
+.idea/
+.vscode/
+.DS_Store

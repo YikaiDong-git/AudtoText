@@ -1,0 +1,6 @@
+faster-whisper>=1.2.0,<2.0
+# CUDA 12 runtime DLLs needed by CTranslate2 on Windows.
+# Comment out the three lines below for a CPU-only install.
+nvidia-cublas-cu12>=12.4
+nvidia-cudnn-cu12>=9.0,<10
+nvidia-cuda-nvrtc-cu12>=12.4
