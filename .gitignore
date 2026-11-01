@@ -26,6 +26,10 @@ models/
 !README.md
 !LICENSE
 !requirements.txt
+!requirements-gui.txt
+
+# Desktop app settings (per machine)
+audtotext_gui.ini
 
 # Run logs and IDE
 *.log

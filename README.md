@@ -1,6 +1,6 @@
 # AudtoText
 
-Local English (and multilingual) audio transcription on Windows + NVIDIA GPU using [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) with the `large-v3` model. One command in, four files out (`.txt`, `.srt`, `.vtt`, timestamped `.txt`).
+Local English (and multilingual) audio transcription on Windows + NVIDIA GPU using [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) with the `large-v3` model. One command in, four files out (`.txt`, `.srt`, `.vtt`, timestamped `.txt`). A [desktop app](#desktop-app) wraps the same command: drop audio files on a window and the four files appear next to each one.
 
 ![License](https://img.shields.io/badge/license-MIT-blue) ![Python](https://img.shields.io/badge/python-3.10%2B-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.x-green) ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
@@ -12,6 +12,8 @@ Local English (and multilingual) audio transcription on Windows + NVIDIA GPU usi
 - **Auto device & precision** detection (CUDA fp16, falls back to CPU int8).
 - **Bundled CUDA DLL discovery** — `nvidia-cublas-cu12` / `nvidia-cudnn-cu12` wheels are picked up automatically; no system-wide CUDA toolkit install needed.
 - **VAD silence filtering** (Silero) so the decoder doesn't waste compute on empty stretches.
+- **Reproducible**: a fixed `--seed` makes temperature-fallback sampling repeatable, so a rerun of the same file gives the same transcript.
+- **Drag-and-drop desktop app** with a queue, progress bar and transcript preview.
 
 ## Requirements
 
@@ -92,7 +94,10 @@ python audtotext.py AUDIO [-o OUTPUT_DIR]
                           [--no-vad] [--no-condition-prev]
                           [--formats txt,srt,vtt,timestamped]
                           [--model-cache-dir DIR]
+                          [--seed N] [--progress-every SECONDS]
 ```
+
+`--seed` (default `0`) fixes the sampling that Whisper's temperature fallback uses on hard stretches of audio; the same seed, audio and settings give byte-identical output on the same machine. `--progress-every` sets the interval between `[prog]` lines (default 10 s).
 
 Common recipes:
 
@@ -112,6 +117,41 @@ python audtotext.py movie.mkv --formats srt,vtt
 # Force CPU (no GPU available)
 python audtotext.py meeting.wav --device cpu --compute-type int8 --model small
 ```
+
+## Desktop app
+
+`audtotext_gui.py` puts the same pipeline behind a window. Drop audio or video files on it, or on its desktop icon, and it writes the four transcript files next to each one, shows progress, and displays the finished transcript with **Copy text**, **Open file** and **Show in folder** buttons.
+
+- Files run one at a time, each in a fresh `audtotext.py` process, so the outputs match the command line byte for byte and the GPU memory is released between files.
+- Files dropped on the desktop icon while the window is open join that window's queue.
+- A dropped folder adds the audio and video files directly inside it.
+- The options persist in `audtotext_gui.ini` next to the script.
+
+Setup, once, inside the env:
+
+```powershell
+pip install -r requirements-gui.txt
+powershell -ExecutionPolicy Bypass -File tools\make_shortcut.ps1 -Python .\env\pythonw.exe -ModelCacheDir .\models
+```
+
+`make_shortcut.ps1` puts an **AudtoText** icon on the desktop that runs `pythonw.exe audtotext_gui.py --model-cache-dir <dir>`. To start the window without the shortcut:
+
+```powershell
+pythonw audtotext_gui.py --model-cache-dir D:\path\to\models
+```
+
+| Window option | CLI equivalent |
+|---------------|----------------|
+| Language | `--language` (Auto-detect = `auto`) |
+| Accuracy: Max / Standard | `--beam-size 10` / `--beam-size 5` |
+| Model | `--model` |
+| Files | `--formats` |
+| Phone call or noisy recording | `--no-condition-prev` |
+| Save to: Next to the audio file / folder | default / `-o DIR` |
+
+Tests: `python -m unittest tests.test_gui -v`. Set `AUDTOTEXT_MODEL_DIR` and `AUDTOTEXT_TEST_AUDIO` (optionally `AUDTOTEXT_TEST_MODEL`, default `tiny`) to include the end-to-end window tests, which drop a file on an offscreen window and compare its outputs with a direct CLI run.
+
+`tools/make_icon.py` redraws `assets/audtotext.ico`.
 
 ## Benchmarks
 
@@ -156,6 +196,15 @@ First invocation downloads `large-v3` weights (~3 GB) and warms the CUDA kernel 
 
 **`.m4a` won't decode**
 FFmpeg is not on `PATH`. `ffmpeg -version` must work. The conda recipe above installs it into the env automatically.
+
+**Exit code `0xC0000409` (Git Bash shows `127`) right after `[done]`**
+CTranslate2 4.7.1 and earlier abort at process exit on Windows + CUDA whenever a temperature-fallback decode ran: the cuRAND states created for sampling are freed after the CUDA runtime starts unloading. The output files are complete; only the exit code is wrong. ctranslate2 4.7.2 fixes it ([OpenNMT/CTranslate2#1912](https://github.com/OpenNMT/CTranslate2/pull/1912)), and `requirements.txt` pins `ctranslate2>=4.7.2`:
+```powershell
+pip install -U "ctranslate2>=4.7.2,<5"
+```
+
+**Desktop app: `DLL load failed while importing QtCore: The specified procedure could not be found`**
+A conda env puts its own ICU build (`Library\bin\icuuc.dll`, pulled in by conda-forge ffmpeg) ahead of the Windows copy that Qt links against. `audtotext_gui.py` loads `C:\Windows\System32\icuuc.dll` before importing Qt, which resolves the clash; any other script that imports PySide6 in the same env needs the same two lines.
 
 ## How it works (one-line)
 
