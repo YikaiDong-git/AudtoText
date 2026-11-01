@@ -120,10 +120,19 @@ def parse_args() -> argparse.Namespace:
                    help="comma-separated subset of: txt, srt, vtt, timestamped")
     p.add_argument("--model-cache-dir", type=Path, default=None,
                    help="where to download model weights (default: HF_HOME or ~/.cache/huggingface)")
+    p.add_argument("--seed", type=int, default=0,
+                   help="seed for the sampling used by temperature fallback; same seed + same audio "
+                        "= same transcript")
+    p.add_argument("--progress-every", type=float, default=10.0,
+                   help="seconds between [prog] progress lines")
     return p.parse_args()
 
 
 def main() -> int:
+    # Windows defaults redirected stdout to the ANSI codepage (e.g. cp1252),
+    # which cannot encode CJK paths or transcript text.
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     args = parse_args()
 
     if not args.audio.is_file():
@@ -148,10 +157,14 @@ def main() -> int:
 
     register_cuda_dlls()
 
+    import ctranslate2
     from faster_whisper import WhisperModel
 
+    # Temperature fallback (t > 0) samples from the decoder; without a fixed
+    # seed, a rerun of the same file can yield a different transcript.
+    ctranslate2.set_random_seed(args.seed)
+
     if args.device == "auto":
-        import ctranslate2
         device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
     else:
         device = args.device
@@ -194,7 +207,7 @@ def main() -> int:
     last_print = time.time()
     for seg in segments_iter:
         segments.append(seg)
-        if time.time() - last_print > 10:
+        if time.time() - last_print > args.progress_every:
             pct = seg.end / info.duration * 100
             print(f"[prog] {seg.end:7.1f}s / {info.duration:.1f}s ({pct:5.1f}%) "
                   f"elapsed={time.time() - t0:6.1f}s", flush=True)
@@ -211,7 +224,7 @@ def main() -> int:
         "vtt": (write_vtt, ".vtt"),
         "timestamped": (write_timestamped, ".timestamped.txt"),
     }
-    for fmt in formats:
+    for fmt in (f for f in writers if f in formats):
         writer, ext = writers[fmt]
         out = output_dir / f"{stem}{ext}"
         writer(segments, out)

@@ -1,4 +1,8 @@
 faster-whisper>=1.2.0,<2.0
+# 4.7.2 frees cuRAND states before thread teardown (OpenNMT/CTranslate2#1912).
+# Older versions crash at exit with 0xC0000409 on Windows + CUDA whenever a
+# temperature-fallback decode ran, after all outputs were already written.
+ctranslate2>=4.7.2,<5
 # CUDA 12 runtime DLLs needed by CTranslate2 on Windows.
 # Comment out the three lines below for a CPU-only install.
 nvidia-cublas-cu12>=12.4
