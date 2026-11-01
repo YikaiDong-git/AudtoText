@@ -149,7 +149,7 @@ pythonw audtotext_gui.py --model-cache-dir D:\path\to\models
 | Phone call or noisy recording | `--no-condition-prev` |
 | Save to: Next to the audio file / folder | default / `-o DIR` |
 
-Tests: `python -m unittest tests.test_gui -v`. Set `AUDTOTEXT_MODEL_DIR` and `AUDTOTEXT_TEST_AUDIO` (optionally `AUDTOTEXT_TEST_MODEL`, default `tiny`) to include the end-to-end window tests, which drop a file on an offscreen window and compare its outputs with a direct CLI run.
+Tests: `python -m unittest discover tests -v` runs the `.txt` writer tests and the window tests. Set `AUDTOTEXT_MODEL_DIR` and `AUDTOTEXT_TEST_AUDIO` (optionally `AUDTOTEXT_TEST_MODEL`, default `tiny`) to include the end-to-end window tests, which drop a file on an offscreen window and compare its outputs with a direct CLI run.
 
 `tools/make_icon.py` redraws `assets/audtotext.ico`.
 
@@ -167,7 +167,7 @@ Caveats: batch size 1 (faster-whisper default), VAD on, condition-on-previous-te
 
 | File | Contents | Use for |
 |------|----------|---------|
-| `<stem>.txt`              | Paragraph-formatted prose, sentence-aware breaks every ~600 chars. | Reading, copy-paste into a doc. |
+| `<stem>.txt`              | Paragraph-formatted prose, sentence-aware breaks every ~600 chars. Chinese, Japanese and Cantonese: segments join directly after punctuation (a space marks unpunctuated pauses), and paragraphs break at segment ends every ~250–500 characters. | Reading, copy-paste into a doc. |
 | `<stem>.timestamped.txt`  | One Whisper segment per line, prefixed with `[hh:mm:ss.ss]`. | Quick navigation; lightweight `grep`-able. |
 | `<stem>.srt`              | SubRip subtitles, `00:00:00,000 --> 00:00:05,400` blocks. | Video subtitle tracks (`mkvtoolnix`, `ffmpeg -c:s mov_text`). |
 | `<stem>.vtt`              | WebVTT, dot-separator timestamps, `WEBVTT` header. | HTML5 `<track>` elements, web players. |
@@ -196,6 +196,9 @@ First invocation downloads `large-v3` weights (~3 GB) and warms the CUDA kernel 
 
 **`.m4a` won't decode**
 FFmpeg is not on `PATH`. `ffmpeg -version` must work. The conda recipe above installs it into the env automatically.
+
+**`_ArrayMemoryError: Unable to allocate ... float64` or `mkl_malloc: failed to allocate memory` on a long file**
+Both are system RAM, not GPU memory. faster-whisper's stock feature extractor runs one float64 STFT over the whole file (3.5 GB extra for a 60-minute recording); `audtotext.py` swaps in `BlockwiseFeatures`, which computes the same features bitwise in 0.7 GB. Loading `large-v3` still needs ~3 GB of free RAM for a few seconds, so with many browser tabs or apps open, close some and retry.
 
 **Exit code `0xC0000409` (Git Bash shows `127`) right after `[done]`**
 CTranslate2 4.7.1 and earlier abort at process exit on Windows + CUDA whenever a temperature-fallback decode ran: the cuRAND states created for sampling are freed after the CUDA runtime starts unloading. The output files are complete; only the exit code is wrong. ctranslate2 4.7.2 fixes it ([OpenNMT/CTranslate2#1912](https://github.com/OpenNMT/CTranslate2/pull/1912)), and `requirements.txt` pins `ctranslate2>=4.7.2`:

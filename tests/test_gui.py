@@ -9,8 +9,8 @@ offscreen, so they need a model cache and an audio file:
     set AUDTOTEXT_TEST_MODEL=tiny            (optional; default tiny)
     python -m unittest tests.test_gui -v
 
-Close any open AudtoText window first: the forwarding test needs the
-single-window channel for itself.
+The tests use their own single-window channel, so an AudtoText window you
+have open is left alone.
 """
 import os
 import shutil
@@ -28,6 +28,13 @@ import audtotext_gui as gui  # noqa: E402
 from PySide6.QtCore import QEventLoop, QMimeData, QPointF, QSettings, Qt, QUrl  # noqa: E402
 from PySide6.QtGui import QDragEnterEvent, QDropEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
+
+# Windows lets several servers listen on one pipe name, so a test window on
+# the real channel can steal (or hand off) files from an AudtoText window the
+# user has open. Tests get a channel of their own.
+gui.SERVER_NAME = f"AudtoText-test-{os.getpid()}"
+SECOND_LAUNCH = ("import sys, audtotext_gui as g; g.SERVER_NAME = sys.argv[1]; "
+                 "sys.argv = sys.argv[:1] + sys.argv[2:]; sys.exit(g.main())")
 
 # Lines copied verbatim from run_0924.log and run_call.log (Oct 2026 runs).
 REAL_LINES = {
@@ -185,11 +192,10 @@ class WindowEndToEnd(unittest.TestCase):
                          job.outputs["txt"].read_text(encoding="utf-8"))
 
     def test_second_launch_forwards_files_and_cancel_stops_the_run(self):
-        self.assertTrue(self.win.server.isListening(),
-                        "another AudtoText window owns the channel; close it and rerun")
+        self.assertTrue(self.win.server.isListening())
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
-        second = subprocess.Popen([str(gui.engine_python()), str(gui.APP_DIR / "audtotext_gui.py"),
-                                   str(self.audio)], env=env)
+        second = subprocess.Popen([str(gui.engine_python()), "-c", SECOND_LAUNCH, gui.SERVER_NAME,
+                                   str(self.audio)], env=env, cwd=str(gui.APP_DIR))
         try:
             self.wait_until(lambda: second.poll() is not None and self.win.jobs, 60)
         finally:

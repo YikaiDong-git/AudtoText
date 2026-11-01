@@ -17,6 +17,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 
 def register_cuda_dlls():
     """Add bundled NVIDIA wheels' DLL dirs to the search path on Windows.
@@ -40,6 +42,59 @@ def register_cuda_dlls():
             os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
 
 
+class BlockwiseFeatures:
+    """faster-whisper's log-Mel features with the STFT done a block at a time.
+
+    The stock FeatureExtractor runs one STFT over the whole file, and numpy
+    does it in float64, so a 50-minute recording needs ~3 GB of RAM at once
+    and fails with _ArrayMemoryError on a busy machine. STFT frames are
+    independent, so the FFT and power spectrum run block by block; the mel
+    projection and dynamic-range clamp then run once over the whole power
+    spectrum, as in the stock extractor. The features are bitwise identical.
+    """
+
+    def __init__(self, stock, block_frames: int = 16384):
+        self.stock = stock
+        self.block_frames = block_frames
+
+    def __getattr__(self, name):
+        # sampling_rate, hop_length, nb_max_frames, time_per_frame, ...
+        return getattr(self.stock, name)
+
+    def __call__(self, waveform, padding=160, chunk_length=None):
+        fe = self.stock
+        if chunk_length is not None:
+            fe.n_samples = chunk_length * fe.sampling_rate
+            fe.nb_max_frames = fe.n_samples // fe.hop_length
+        waveform = np.asarray(waveform, dtype=np.float32)
+        if padding:
+            waveform = np.pad(waveform, (0, padding))
+        half = fe.n_fft // 2
+        padded = np.pad(waveform, (half, half), mode="reflect")
+        del waveform
+        window = np.hanning(fe.n_fft + 1)[:-1].astype("float32")
+        n_frames = 1 + (padded.shape[0] - fe.n_fft) // fe.hop_length
+        frames = np.lib.stride_tricks.as_strided(
+            padded, (n_frames, fe.n_fft), (fe.hop_length * padded.strides[0], padded.strides[0]))
+        n_out = n_frames - 1  # the stock extractor drops the last frame
+        # Same layout as the stock power spectrum (a transposed FFT), so the one
+        # mel matmul below is the BLAS call the stock extractor makes. A matmul
+        # split into column blocks rounds ~3% of values differently.
+        magnitudes = np.empty((fe.n_fft // 2 + 1, n_out), dtype=np.float32, order="F")
+        for start in range(0, n_out, self.block_frames):
+            stop = min(start + self.block_frames, n_out)
+            spec = np.fft.rfft(frames[start:stop] * window, n=fe.n_fft, axis=-1)
+            magnitudes[:, start:stop] = np.abs(spec.T.astype("complex64")) ** 2
+        del frames, padded
+        mel_spec = fe.mel_filters @ magnitudes
+        del magnitudes
+        log_spec = np.log10(np.clip(mel_spec, a_min=1e-10, a_max=None, out=mel_spec), out=mel_spec)
+        np.maximum(log_spec, log_spec.max() - 8.0, out=log_spec)
+        log_spec += 4.0
+        log_spec /= 4.0
+        return log_spec
+
+
 def format_timestamp(seconds: float, sep: str = ",") -> str:
     """Format seconds as HH:MM:SS,mmm (SRT) or HH:MM:SS.mmm (VTT)."""
     ms = int(round(seconds * 1000))
@@ -49,8 +104,18 @@ def format_timestamp(seconds: float, sep: str = ",") -> str:
     return f"{h:02d}:{m:02d}:{s:02d}{sep}{ms:03d}"
 
 
-def write_txt(segments, path: Path) -> None:
+# Written without spaces between words; see write_txt_unspaced.
+UNSPACED_LANGUAGES = {"zh", "ja", "yue"}
+SENTENCE_END = tuple("。！？.!?")
+FULLWIDTH_END = tuple("，。！？、；：）」』”")
+ASCII_END = tuple(",.!?;:")
+
+
+def write_txt(segments, path: Path, language: str) -> None:
     """Plain text with paragraph breaks every ~600 chars at sentence ends."""
+    if language in UNSPACED_LANGUAGES:
+        write_txt_unspaced(segments, path)
+        return
     paragraph = " ".join(seg.text.strip() for seg in segments)
     paragraph = re.sub(r"\s+", " ", paragraph).strip()
     sentences = re.split(r"(?<=[.!?])\s+", paragraph)
@@ -63,6 +128,33 @@ def write_txt(segments, path: Path) -> None:
                 buf = []
         if buf:
             f.write(" ".join(buf) + "\n")
+
+
+def write_txt_unspaced(segments, path: Path) -> None:
+    """Paragraphs for Chinese, Japanese and Cantonese.
+
+    Whisper often leaves these sentences unpunctuated, so segments join
+    directly only after punctuation (ASCII punctuation followed by Latin text
+    keeps its space) and keep a space elsewhere, the pause mark Whisper
+    itself uses inside segments. Paragraphs break at segment ends: the first
+    sentence end after ~250 characters, or any segment end after ~500.
+    """
+    paragraphs, buf = [], ""
+    for seg in segments:
+        text = re.sub(r"\s+", " ", seg.text).strip()
+        if not text:
+            continue
+        joined = buf.endswith(FULLWIDTH_END) or (buf.endswith(ASCII_END) and not text[0].isascii())
+        if buf and not joined:
+            buf += " "
+        buf += text
+        if (len(buf) >= 250 and text.endswith(SENTENCE_END)) or len(buf) >= 500:
+            paragraphs.append(buf)
+            buf = ""
+    if buf:
+        paragraphs.append(buf)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(paragraphs) + "\n")
 
 
 def write_timestamped(segments, path: Path) -> None:
@@ -182,6 +274,7 @@ def main() -> int:
         compute_type=compute_type,
         download_root=str(args.model_cache_dir) if args.model_cache_dir else None,
     )
+    model.feature_extractor = BlockwiseFeatures(model.feature_extractor)
     print(f"[load] done in {time.time() - t0:.1f}s", flush=True)
 
     print(f"[run]  transcribing {args.audio}", flush=True)
@@ -219,7 +312,7 @@ def main() -> int:
           flush=True)
 
     writers = {
-        "txt": (write_txt, ".txt"),
+        "txt": (lambda segs, out: write_txt(segs, out, info.language), ".txt"),
         "srt": (write_srt, ".srt"),
         "vtt": (write_vtt, ".vtt"),
         "timestamped": (write_timestamped, ".timestamped.txt"),
